@@ -29,7 +29,7 @@ void setup()
 void loop()
 {
   String waste_type = "";
-
+  int rubbish_lvl = 0;
   // Step 1 : Vibration detection || Button pushing
   int vibrationValue = readVibration();
 
@@ -39,7 +39,20 @@ void loop()
     int moistureValue = readMoisture();
 
     if( moistureValue > 300 ){ // It's wet if if the value is more than 300
-      // // Step 3A : Do the flow for wet category rubbish
+      // Step 3A : Move the bin for wet category rubbish to be at the gate
+      spinBase(100);
+
+      // Step 4A : Open and close the gate
+      openGate();
+      delay(2500);
+      //closeGate();
+      delay(2500);
+
+      // Step 5A : read the rubbish level in the bin
+      rubbish_lvl = readDistance();
+      
+      // Step 6A : Spin the base back to the origin position 
+      spinBase(-100);
 
 
 
@@ -47,28 +60,44 @@ void loop()
       // Step 3B : Trigger ESP32 board to run the flow if the waste is not wet
       Serial.println("Start");
 
-      
-
+      // Step 4B : Waiting for response from ESP32
       waste_type = Serial.readString();
       while (waste_type == ""){ //wait until the task on ESP32 finished
         waste_type = Serial.readString();
         delay(100);
       }
 
+      // Step 5B : Spin the base
+      int spinValue = 0;
       if( waste_type == "Plastic" ){
-
-
-
+        spinValue = 200;
       }else if( waste_type == "Paper" ){
-
+        spinValue = 300; // these are dummies
       }
+
+      // ******** Do the same steps as wet rubbish ****************
+      
+      // Step 3A : Move the bin for wet category rubbish to be at the gate
+      spinBase(spinValue);
+
+      // Step 4A : Open and close the gate
+      openGate();
+      delay(2500);
+      //closeGate();
+      delay(2500);
+
+      // Step 5A : read the rubbish level in the bin
+      rubbish_lvl = readDistance();
+      
+      // Step 6A : Spin the base back to the origin position 
+      spinBase(-1 * spinValue);
 
     }
 
-  
+    // Upload data to cloud. Should we use ESP32 instead?
+    Serial.println(waste_type + " " + rubbish_lvl);
   }
-  
-  
+
   // Waiting stage
   delay(500);
 }
