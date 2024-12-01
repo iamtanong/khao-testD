@@ -378,3 +378,30 @@ void tokenStatusCallback(TokenInfo info)
     GSheet.printf("Token info: type = %s, status = %s\n", GSheet.getTokenType(info).c_str(), GSheet.getTokenStatus(info).c_str());
   }
 }
+
+
+// ************************* communication *****************************
+// #include <Arduino.h>
+
+// #define RXp2 16 // RX pin for Serial2
+// #define TXp2 17 // TX pin for Serial2
+
+// void setup() {
+//   Serial.begin(115200); // Debug output
+//   Serial2.begin(9600, SERIAL_8N1, RXp2, TXp2); // Initialize Serial2
+  
+// }
+
+// void loop() {
+ 
+//     // Read a string from Arduino Uno
+//     String received = Serial2.readString();
+//     if (received != ""){
+//       Serial.println(received);
+//     }
+//    delay(1000);
+//    Serial2.println("Ayo from ESP32");
+
+
+//   delay(1000); // Small delay for stability
+// }
