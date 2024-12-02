@@ -3,12 +3,11 @@
 #define MOISTURE_SENSOR_PIN A0
 #define SERVO_PIN 9
 #define VIBRATION_SENSOR_PIN 2
-#define GAS_SENSOR_PIN A1
 
 // Functoin pre-declaration
 void readMoisture();
 void readDistance();
-void readGas();
+
 void readVibration();
 void spinBase(int distance);
 void openGate();
@@ -23,7 +22,7 @@ void setup()
   sg90.attach(7);
   sg90.write(0); // set zero the gate
 
-
+  
 }
 
 void loop()
@@ -121,6 +120,7 @@ void readVibration()
 
 void spinBase(int distance)
 {
+  
 }
 
 void openGate()
