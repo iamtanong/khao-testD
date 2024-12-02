@@ -1,21 +1,17 @@
 #include "WiFi.h"
 #include "esp_camera.h"
-#include "esp_timer.h"
 #include "img_converters.h"
 #include "Arduino.h"
 #include "soc/soc.h"          // Disable brownout problems
 #include "soc/rtc_cntl_reg.h" // Disable brownout problems
-#include "driver/rtc_io.h"
-#include <ESPAsyncWebServer.h>
-#include <SPIFFS.h>
-#include <FS.h>
-#include "time.h"
-#include <ESP_Google_Sheet_Client.h>
 #include <HTTPClient.h>
 #include "Base64.h"
 #include <WiFiClientSecure.h>
 #include <ArduinoJson.h>
-#include <ArduinoOTA.h>
+#include <PubSubClient.h>
+#include <WebServer.h>
+
+WebServer server(80);
 
 // Save image Reference: https://randomnerdtutorials.com/esp32-cam-take-photo-display-web-server/
 // Reference: https://github.com/kosaladeshan/IOT-Group-Project/blob/main/esp32/esp32.ino
@@ -42,8 +38,8 @@
 #define VSYNC_GPIO_NUM 25
 #define HREF_GPIO_NUM 23
 #define PCLK_GPIO_NUM 22
-#define FLASH_LED 33      // Built-in LED
-#define CAM_STATUS_LED 12 // Status LED
+#define FLASH_LED 4   // Built-in LED
+#define STATUS_LED 12 // Status LED
 
 // WiFi
 const char *ssid = "tanong_eexe";
@@ -65,22 +61,74 @@ const char *geminiDomain = "generativelanguage.googleapis.com";
 String geminiEndpoint = "/v1beta/models/gemini-1.5-flash:generateContent";
 #define GEMINI_API_KEY "AIzaSyCDSya9IDLuavyxr7C3TrooK3GIEJKo2kk"
 
-// NTP server to request epoch time
-const char *ntpServer = "pool.ntp.org";
-// Variable to save current epoch time
-unsigned long epochTime;
+// NETPIE
+const char *mqtt_server = "broker.netpie.io";
+const int mqtt_port = 1883;
+const char *mqtt_Client = "28cd7801-bc2f-4be2-a8cb-810d8b94d296";
+const char *mqtt_username = "N4LKuHyCmvUMkC8hTJwv1t7GviXnoLmJ";
+const char *mqtt_password = "eMKrrzxaFt2tzxLTdaBnc6agCRVsGGS1";
+
+// Blynk
+#define BLYNK_TEMPLATE_ID "TMPL63jt8DgKn"
+#define BLYNK_TEMPLATE_NAME "ESP32 Project"
+#define BLYNK_AUTH_TOKEN "h_ir-S-3MkfT5fTjSLv_vB8bjhX3RL99"
+
+#include <BlynkSimpleEsp32.h>
+
+WiFiClient espClient;
+PubSubClient client(espClient);
 
 // Function pre-declaration
 void connectWifi();
 void cameraInit();
 camera_fb_t *capturePhoto();
-void sheet_logging(String binType, bool isFull);
-void postDrive(camera_fb_t *fb);
+bool sheet_logging(String binType, bool isFull);
+bool postDrive(camera_fb_t *fb);
 String postGemini(String base64String);
-unsigned long getTime();
-void tokenStatusCallback(TokenInfo info); // Token Callback function for google Sheet
 String urlencode(String str);
 String encodeToBase64(camera_fb_t *fb);
+
+String data = "";
+
+// Callback Function
+
+void callback(char *topic, byte *payload, unsigned int length)
+{
+  Serial.print("Message received on topic: ");
+  Serial.println(topic);
+
+  Serial.print("Message: ");
+  for (unsigned int i = 0; i < length; i++)
+  {
+    Serial.print((char)payload[i]); // Convert byte to char for readable output
+    data.concat((char)payload[i]);
+  }
+  Serial.println();
+}
+
+// Reconnect to MQTT broker
+void reconnect()
+{
+  while (!client.connected())
+  {
+    Serial.print("Attempting NETPIE2020 connection...");
+    if (client.connect(mqtt_Client, mqtt_username, mqtt_password))
+    {
+      Serial.println("NETPIE2020 connected");
+
+      // Subscribe to topics after successful connection
+      client.subscribe("@msg/#");
+      Serial.println("Subscribed to topic: @msg/#");
+    }
+    else
+    {
+      Serial.print("Failed, rc=");
+      Serial.print(client.state());
+      Serial.println(" try again in 5 seconds...");
+      delay(5000);
+    }
+  }
+}
 
 void setup()
 {
@@ -88,32 +136,6 @@ void setup()
   Serial.begin(115200);
 
   connectWifi();
-
-  ArduinoOTA
-      .onStart([]()
-               {
-      String type;
-      if (ArduinoOTA.getCommand() == U_FLASH)
-        type = "sketch";
-      else // U_SPIFFS
-        type = "filesystem";
-
-      // NOTE: if updating SPIFFS this would be the place to unmount SPIFFS using SPIFFS.end()
-      Serial.println("Start updating " + type); })
-      .onEnd([]()
-             { Serial.println("\nEnd"); })
-      .onProgress([](unsigned int progress, unsigned int total)
-                  { Serial.printf("Progress: %u%%\r", (progress / (total / 100))); })
-      .onError([](ota_error_t error)
-               {
-      Serial.printf("Error[%u]: ", error);
-      if (error == OTA_AUTH_ERROR) Serial.println("Auth Failed");
-      else if (error == OTA_BEGIN_ERROR) Serial.println("Begin Failed");
-      else if (error == OTA_CONNECT_ERROR) Serial.println("Connect Failed");
-      else if (error == OTA_RECEIVE_ERROR) Serial.println("Receive Failed");
-      else if (error == OTA_END_ERROR) Serial.println("End Failed"); });
-
-  ArduinoOTA.begin();
 
   // Turn-off the 'brownout detector'
   WRITE_PERI_REG(RTC_CNTL_BROWN_OUT_REG, 0);
@@ -123,10 +145,50 @@ void setup()
 
   // Serial 2 : for Arduino communicate
   // Serial2.begin(9600, SERIAL_8N1, RXpin2, TXpin2);
+
+  // Configure MQTT server and callback
+  client.setServer(mqtt_server, mqtt_port);
+  client.setCallback(callback); // Register the callback function
+
+  // Connect to the MQTT broker
+  reconnect();
+
+  Blynk.begin(BLYNK_AUTH_TOKEN, ssid, password);
+
+  // First 2 photos are green and pink
+  for (int i = 0; i < 2; i++)
+  {
+    camera_fb_t *fb = NULL;
+    fb = esp_camera_fb_get();
+    if (!fb)
+    {
+      continue;
+    }
+    esp_camera_fb_return(fb);
+    delay(500);
+  }
+  digitalWrite(FLASH_LED, HIGH);
+
+  // server.on("/image", handleImage);
+  // server.begin();
 }
+
+// void handleImage(camera_fb_t *fb)
+// {
+//   server.send(200, "image/jpeg", (const char *)fb->buf, fb->len);
+// }
 
 void loop()
 {
+  if (!client.connected())
+  {
+    reconnect();
+  }
+  client.loop(); // Handle incoming messages and keep the connection alive
+
+  Blynk.run();
+
+  // server.handleClient();
   // if (WiFi.status() != WL_CONNECTED)
   // {
   //   // If not connected to wifi, Try reconnect
@@ -149,16 +211,88 @@ void loop()
    * 10. Repeat
    * PS. 8 and 9 can be done at the same time during 5 and 6
    */
-  ArduinoOTA.handle();
-  camera_fb_t *fb = capturePhoto();
-  String base64 = encodeToBase64(fb);
+  // camera_fb_t *fb = capturePhoto();
+  // String base64 = encodeToBase64(fb);
   // postDrive(fb);
   // sheet_logging(String("PLASTIC_TEST"), true);
-  // newPostGemini(base64);
-  postGemini(base64);
+  // postGemini(base64);
   // }
 
-  delay(10000);
+  // wait for rubbish in
+  if (data == "rubbish-in")
+  {
+    data = "";
+    digitalWrite(STATUS_LED, HIGH);
+
+    camera_fb_t *fb = capturePhoto();
+    String base64image = encodeToBase64(fb);
+
+    // digitalWrite(flashLED, LOW);
+
+    // Serial.println("Camera capture success");
+    // String base64image = encodeToBase64(fb);
+
+    String rubbish_type;
+    for (int i = 0; i < 3; i++)
+    {
+      // Retry
+      rubbish_type = postGemini(base64image);
+      if (rubbish_type != "")
+        break;
+    }
+
+    // Serial2.println(rubbish_type);
+    client.publish("@msg/testkub", rubbish_type.c_str());
+    for (int i = 0; i < 3; i++)
+    {
+      // Retry
+      bool complete = postDrive(fb);
+      if (complete)
+        break;
+    }
+
+    // String htmlImage = "<img src=\"data:image/jpeg;base64,";
+    // htmlImage += base64image;
+    // htmlImage += "\" style=\"width:100%; height:auto;\" />";
+    // Blynk.virtualWrite(V9, htmlImage);
+
+    // String url = "http://" + WiFi.localIP().toString() + "/image";
+    // Blynk.virtualWrite(V9, url);
+
+    // wait for ultrasonic sensor
+    Serial.print("Wait for Ultrasonic sensor");
+    while (data.startsWith("Waste Type:"))
+    {
+      // if(data == "true" || data == "false") break;
+      Serial.print(".");
+      delay(200);
+    }
+    String bin_type = data.substring(11);
+    data = "";
+    while (data.startsWith("Waste Level:"))
+    {
+      // if(data == "true" || data == "false") break;
+      Serial.print(".");
+      delay(200);
+    }
+    String bin_level = data.substring(12);
+    data = "";
+
+    bool is_full = (bin_level == "5") ? true : false;
+
+    for (int i = 0; i < 3; i++)
+    {
+      // Retry
+      bool complete = sheet_logging(bin_type, is_full); // is_full is from ultrasonic
+      if (complete)
+        break;
+    }
+  }
+
+  // Rubbish-out
+  digitalWrite(STATUS_LED, LOW);
+
+  delay(200);
 }
 
 void connectWifi()
@@ -219,7 +353,7 @@ void cameraInit()
   }
 
   pinMode(FLASH_LED, OUTPUT);
-  pinMode(CAM_STATUS_LED, OUTPUT);
+  pinMode(STATUS_LED, OUTPUT);
 
   // sensor_t * s = esp_camera_sensor_get();
   // s->set_brightness(s, 0);     // -2 to 2
@@ -248,24 +382,29 @@ void cameraInit()
 
 camera_fb_t *capturePhoto()
 {
+  // digitalWrite(FLASH_LED, HIGH);
+  // delay(500);
+
   camera_fb_t *fb = NULL;
   fb = esp_camera_fb_get();
   if (!fb)
   {
     Serial.println("Camera capture failed");
     delay(1000);
+    // digitalWrite(FLASH_LED, LOW);
     ESP.restart();
     return NULL;
   }
-
+  // digitalWrite(FLASH_LED, LOW);
   Serial.println("Camera capture success");
   return fb;
 }
 
-void sheet_logging(String binType, bool isFull)
+bool sheet_logging(String binType, bool isFull)
 {
   WiFiClientSecure client;
   client.setInsecure();
+  Serial.println("Logging to Google Sheet.");
   if (client.connect(sheetDomain, 443))
   {
     String isBinFull = "";
@@ -293,25 +432,32 @@ void sheet_logging(String binType, bool isFull)
         Serial.println();
         Serial.println("No response.");
         // If you have no response, maybe need a greater value of waitingTime
+        client.stop();
+        return false;
         break;
       }
     }
-    Serial.println("Url: " + url);
     while (client.available())
     {
       Serial.print(char(client.read()));
     }
+    Serial.println("Data sent to Google Sheet successfully!");
+    client.stop();
+    return true;
   }
   else
   {
     Serial.println("Connected to " + String(sheetDomain) + " failed.");
   }
+  client.stop();
+  return false;
 }
 
-void postDrive(camera_fb_t *fb)
+bool postDrive(camera_fb_t *fb)
 {
   WiFiClientSecure client;
   client.setInsecure();
+  Serial.println("Logging to Google Drive.");
 
   if (client.connect(driveDomain, 443))
   {
@@ -328,7 +474,7 @@ void postDrive(camera_fb_t *fb)
 
     esp_camera_fb_return(fb);
 
-    Serial.println("Send a captured image to Google Drive.");
+    // Serial.println("Send a captured image to Google Drive.");
 
     client.println("POST " + driveScript + " HTTP/1.1");
     client.println("Host: " + String(driveDomain));
@@ -354,6 +500,8 @@ void postDrive(camera_fb_t *fb)
         Serial.println();
         Serial.println("No response.");
         // If you have no response, maybe need a greater value of waitingTime
+        client.stop();
+        return false;
         break;
       }
     }
@@ -362,12 +510,16 @@ void postDrive(camera_fb_t *fb)
     {
       Serial.print(char(client.read()));
     }
+    Serial.println("Data sent to Google Drive successfully!");
+    client.stop();
+    return true;
   }
   else
   {
     Serial.println("Connected to " + String(driveDomain) + " failed.");
   }
   client.stop();
+  return false;
 }
 
 String postGemini(String base64String)
@@ -378,7 +530,7 @@ String postGemini(String base64String)
   String jsonPayload = "{";
   jsonPayload.concat("\"contents\": [{");
   jsonPayload.concat("\"parts\": [");
-  jsonPayload.concat("{ \"text\": \"What is the material that the object in this image made of? Plastic or Paper. Ignore the curcuit, sensor and the black paper in the backgroud, give the result shortly, one word, Paper or Plastic\" },");
+  jsonPayload.concat("{ \"text\": \"What is the material that the object in this image made of? Plastic or Paper. Or Wet if it is fruits or vegetables.  Ignore the curcuit, sensor and the black paper in the backgroud, give the result shortly, one word, Paper or Plastic or Wet\" },");
   jsonPayload.concat("{ \"inline_data\": {");
   jsonPayload.concat("\"mime_type\": \"image/jpeg\",");
   jsonPayload.concat("\"data\": \"" + base64String + "\"");
@@ -431,32 +583,6 @@ String postGemini(String base64String)
   }
   http.end();
   return "";
-}
-
-unsigned long getTime()
-{
-  time_t now;
-  struct tm timeinfo;
-  if (!getLocalTime(&timeinfo))
-  {
-    Serial.println("Failed to obtain time");
-    return 0;
-  }
-  time(&now);
-  return now;
-}
-
-void tokenStatusCallback(TokenInfo info)
-{
-  if (info.status == token_status_error)
-  {
-    GSheet.printf("Token info: type = %s, status = %s\n", GSheet.getTokenType(info).c_str(), GSheet.getTokenStatus(info).c_str());
-    GSheet.printf("Token error: %s\n", GSheet.getTokenError(info).c_str());
-  }
-  else
-  {
-    GSheet.printf("Token info: type = %s, status = %s\n", GSheet.getTokenType(info).c_str(), GSheet.getTokenStatus(info).c_str());
-  }
 }
 
 String urlencode(String str)
